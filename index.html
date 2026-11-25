@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>图文排版生成器</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23c62f2f'/%3E%3Ctext x='32' y='45' font-size='34' text-anchor='middle' fill='%23ffffff' font-family='Microsoft YaHei,sans-serif'%3E%E5%9B%BE%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="logo">图</div>
+  <div>
+    <h1>图文排版生成器</h1>
+    <p>丢图片 · 填标题正文 · 纯浏览器按母版排版，生成 DOCX 与 ZIP（不上传任何服务器）</p>
+  </div>
+  <span class="maker">26级工业机器人三班苗兴旺制作</span>
+</header>
+
+<main>
+  <section class="card">
+    <h2><span class="dot"></span>图片（顺序即序号，最后一张进正文）</h2>
+    <div class="drop" id="drop">
+      <b>把图片拖到这里</b>，或点击选择
+      <small>支持 JPG / PNG / WEBP / BMP；可多选，可拖拽调整顺序</small>
+      <input type="file" id="file" multiple accept="image/*" hidden>
+    </div>
+    <div class="thumbs" id="thumbs"></div>
+    <div class="tip">
+      拖动缩略图可排序；带绿色 <b>末图</b> 标记的那张会被插进文档末尾。
+      全部照片同时打包进 <code>活动照片/</code> 文件夹。
+    </div>
+  </section>
+
+  <section class="card">
+    <h2><span class="dot"></span>内容</h2>
+
+    <label class="f">标题（会同时作为文件名，<code>|</code> 自动换成空格）</label>
+    <input type="text" id="title" placeholder="例：青马奔腾，使命在肩|匠心书院举办……开班仪式">
+
+    <label class="f">文件夹名前缀（日期）</label>
+    <div class="row">
+      <input type="text" id="prefix" placeholder="20261106">
+      <button class="btn ghost" id="today" style="max-width:96px">今天</button>
+    </div>
+
+    <label class="f">正文（每行一段，自动首行缩进两字符）</label>
+    <textarea id="body" rows="9" placeholder="第一段……&#10;第二段……&#10;第三段……"></textarea>
+
+    <label class="f">署名 —— 公众号末尾那几行直接粘进来（横排连成一行也行），自动识别标签断开、右对齐排版</label>
+    <textarea id="signPaste" rows="6" placeholder="文字：肖茜茜&#10;排版：张智博&#10;图片：王春阳&#10;一审：张怡&#10;二审：张贝贝&#10;三审：刘啸风&#10;出品：……（会自动去掉）"></textarea>
+    <div class="actions" style="margin-top:8px">
+      <button class="btn ghost" id="reparse">重新解析</button>
+      <button class="btn ghost" id="clearSign">清空</button>
+      <label class="hint" style="display:flex;align-items:center;gap:5px;margin:0">
+        <input type="checkbox" id="mapWen"> 「文字」写成「撰稿」
+      </label>
+      <label class="hint" style="display:flex;align-items:center;gap:5px;margin:0">
+        <input type="checkbox" id="dropChupin" checked> 去掉「出品」
+      </label>
+    </div>
+    <div class="signs" id="signs"></div>
+    <div class="actions" style="margin-top:10px">
+      <button class="btn ghost" id="addSign">+ 手动加一行</button>
+      <span class="hint" id="signCount"></span>
+    </div>
+
+    <div class="actions">
+      <button class="btn primary" id="go">生成文档</button>
+      <label class="hint" style="display:flex;align-items:center;gap:6px;margin:0">
+        <input type="checkbox" id="rename" checked> 照片按 <code id="prefixHint">IMG-20260101-01.jpg</code> 重命名
+      </label>
+    </div>
+
+    <div class="meter" id="meter"><i id="meterBar"></i></div>
+    <div class="result" id="result"></div>
+  </section>
+</main>
+
+<div class="foot">纯静态页面 · 图片与文档只留在本机浏览器里 · 可直接部署到 GitHub Pages / Cloudflare Pages · <b>26级工业机器人三班苗兴旺制作</b></div>
+
+<script src="vendor/jszip.min.js"></script>
+<script src="app.js"></script>
+<script>
+const $ = (s) => document.querySelector(s);
+let files = [];              // {file, url, name}
+let lastLinks = [];          // 需要 revoke 的 blob url
+
+function fmtDate(d){
+  const p = (n)=>String(n).padStart(2,'0');
+  return '' + d.getFullYear() + p(d.getMonth()+1) + p(d.getDate());
+}
+
+function show(kind, html){
+  const r = $('#result');
+  r.className = 'result ' + kind;
+  r.innerHTML = html;
+}
+
+function boot(){
+  const p = $('#prefix');
+  if (!p.value) p.value = fmtDate(new Date());
+  updatePrefixHint();
+  addSign('撰稿：'); addSign('排版：'); addSign('图片：');
+  addSign('一审：'); addSign('二审：'); addSign('三审：');
+  paintWatermark('26级工业机器人三班苗兴旺制作');
+  DocGen.loadTemplate().catch(()=> show('err','模板 template.docx 加载失败，请确认同目录下有这个文件。'));
+}
+
+/* 页面斜向水印（纯装饰层，不挡点击） */
+function paintWatermark(text){
+  if (!text) return;
+  const layer = document.createElement('div');
+  layer.className = 'wm';
+  for (let i = 0; i < 40; i++){
+    const s = document.createElement('span');
+    s.textContent = text;
+    layer.appendChild(s);
+  }
+  document.body.appendChild(layer);
+}
+
+function updatePrefixHint(){
+  const v = $('#prefix').value.trim();
+  $('#prefixHint').textContent = v ? ('IMG-' + v + '-01.jpg') : 'IMG-01.jpg';
+}
+
+/* ---------- 署名解析 ---------- */
+const SIGN_LABELS = ['文字','撰稿','文案','排版','图片','摄影','美编','设计','编辑','责编','责任编辑',
+  '一审','二审','三审','四审','终审','审核','复核','审稿','审校','校对','出品','指导','监制',
+  '来源','作者','供稿','通讯员','主编','总编','发布'];
+
+function dedupe(list){
+  const seen = Object.create(null); const out = [];
+  for (const s of list){ if (seen[s]) continue; seen[s] = 1; out.push(s); }
+  return out;
+}
+
+function splitSignText(text){
+  const src = (text || '').replace(/\u3000/g, ' ').trim();
+  if (!src) return [];
+  const labels = SIGN_LABELS.slice().sort((a, b) => b.length - a.length);
+  const pat = new RegExp('(' + labels.join('|') + ')\\s*[：:]?\\s*', 'g');
+  const hits = [];
+  let m;
+  while ((m = pat.exec(src)) !== null) hits.push({label: m[1], start: m.index, vs: pat.lastIndex});
+  if (hits.length){
+    const out = [];
+    hits.forEach((h, i) => {
+      const end = (i + 1 < hits.length) ? hits[i + 1].start : src.length;
+      let v = src.slice(h.vs, end).replace(/[\s\r\n]+/g, ' ').trim();
+      v = v.replace(/^[|｜、,，;；\/]+/, '').replace(/[|｜、,，;；\/]+$/, '').trim();
+      if (v) out.push(h.label + '：' + v);
+    });
+    if (out.length) return dedupe(out);
+  }
+  const items = [];
+  const re = /([\u4e00-\u9fa5A-Za-z]{1,6})\s*[：:]/g;
+  const marks = [];
+  while ((m = re.exec(src)) !== null) marks.push({label: m[1], start: m.index, vs: re.lastIndex});
+  if (marks.length){
+    for (let i = 0; i < marks.length; i++){
+      const end = (i + 1 < marks.length) ? marks[i + 1].start : src.length;
+      let v = src.slice(marks[i].vs, end).replace(/[\s\r\n]+/g, ' ').trim();
+      v = v.replace(/^[|｜、,，;；\/]+/, '').replace(/[|｜、,，;；\/]+$/, '').trim();
+      if (!v) continue;
+      items.push(marks[i].label + '：' + v);
+    }
+    if (items.length) return dedupe(items);
+  }
+  return dedupe(src.split(/[\r\n]+/).map(s => s.trim()).filter(Boolean));
+}
+
+function addSign(v){
+  const row = document.createElement('div');
+  row.className = 'signrow';
+  const inp = document.createElement('input');
+  inp.type = 'text';
+  inp.value = v || '';
+  inp.placeholder = '如：一审：张怡';
+  const del = document.createElement('button');
+  del.textContent = '×';
+  del.title = '删除该行';
+  del.onclick = ()=>{ row.remove(); countSigns(); };
+  row.append(inp, del);
+  $('#signs').append(row);
+  countSigns();
+}
+
+function countSigns(){
+  const n = document.querySelectorAll('#signs .signrow').length;
+  $('#signCount').textContent = n + ' 行';
+}
+
+function renderSigns(list){
+  const box = $('#signs');
+  box.innerHTML = '';
+  (list || []).forEach(v => addSign(v));
+  countSigns();
+}
+
+function applyPaste(){
+  const raw = $('#signPaste').value;
+  if (!raw.trim()) return;
+  let list = splitSignText(raw);
+  if ($('#dropChupin').checked) list = list.filter(s => !/^出品\s*[：:]/.test(s));
+  if ($('#mapWen').checked) list = list.map(s => s.replace(/^文字\s*[：:]/, '撰稿：'));
+  renderSigns(list);
+}
+
+function extractTrailingSigns(){
+  const raw = $('#body').value.replace(/\r/g, '\n');
+  const lines = raw.split('\n');
+  const picked = [];
+  while (lines.length){
+    const last = lines[lines.length - 1].trim();
+    const m = last.match(/^([\u4e00-\u9fa5]{1,4})\s*[：:]\s*(.+)$/);
+    if (m && SIGN_LABELS.indexOf(m[1]) >= 0) picked.unshift(lines.pop());
+    else break;
+  }
+  if (!picked.length) return;
+  $('#body').value = lines.join('\n').replace(/\n{3,}/g, '\n\n').replace(/\s+$/, '');
+  if (!$('#signPaste').value.trim()){
+    $('#signPaste').value = picked.join('\n');
+    applyPaste();
+    show('ok', '正文末尾的 ' + picked.length + ' 行署名已自动挪到署名区，可核对一下。');
+  }
+}
+
+/* ---------- 图片 ---------- */
+function renderThumbs(){
+  const box = $('#thumbs');
+  box.innerHTML = '';
+  files.forEach((it, i)=>{
+    const d = document.createElement('div');
+    d.className = 'thumb' + (i === files.length-1 ? ' last' : '');
+    d.draggable = true;
+    d.innerHTML = '<img src="'+it.url+'" alt="">' +
+      '<span class="tag">'+(i===files.length-1?'末图':'#'+(i+1))+'</span>' +
+      '<button class="del" title="移除">×</button>' +
+      '<div class="nm" title="'+it.name+'">'+it.name+'</div>';
+    d.querySelector('.del').onclick = (e)=>{ e.stopPropagation(); URL.revokeObjectURL(it.url); files.splice(i,1); renderThumbs(); };
+    d.addEventListener('dragstart', (e)=>{ d.classList.add('dragging'); e.dataTransfer.setData('text/plain', String(i)); });
+    d.addEventListener('dragend', ()=> d.classList.remove('dragging'));
+    d.addEventListener('dragover', (e)=>{ e.preventDefault(); d.classList.add('over'); });
+    d.addEventListener('dragleave', ()=> d.classList.remove('over'));
+    d.addEventListener('drop', (e)=>{
+      e.preventDefault(); d.classList.remove('over');
+      const from = parseInt(e.dataTransfer.getData('text/plain'), 10);
+      if (isNaN(from) || from === i) return;
+      const moved = files.splice(from,1)[0];
+      files.splice(i,0,moved);
+      renderThumbs();
+    });
+    box.append(d);
+  });
+}
+
+function addFiles(list){
+  for (const f of list){
+    if (!f.type.startsWith('image/')) continue;
+    files.push({file:f, url:URL.createObjectURL(f), name:f.name});
+  }
+  renderThumbs();
+}
+
+const drop = $('#drop');
+drop.onclick = ()=> $('#file').click();
+$('#file').onchange = (e)=>{ addFiles(e.target.files); e.target.value=''; };
+['dragenter','dragover'].forEach(ev=> drop.addEventListener(ev, e=>{ e.preventDefault(); drop.classList.add('hover'); }));
+['dragleave','drop'].forEach(ev=> drop.addEventListener(ev, e=>{ e.preventDefault(); drop.classList.remove('hover'); }));
+drop.addEventListener('drop', e=>{ if (e.dataTransfer.files) addFiles(e.dataTransfer.files); });
+document.addEventListener('paste', e=>{
+  const items = [...(e.clipboardData?.items || [])].filter(i=>i.type.startsWith('image/'));
+  if (items.length) addFiles(items.map(i=>i.getAsFile()).filter(Boolean));
+});
+
+/* ---------- 绑定 ---------- */
+$('#today').onclick = ()=>{ $('#prefix').value = fmtDate(new Date()); updatePrefixHint(); };
+$('#prefix').addEventListener('input', updatePrefixHint);
+$('#addSign').onclick = ()=> addSign('');
+
+let signTimer = null;
+$('#signPaste').addEventListener('input', ()=>{ clearTimeout(signTimer); signTimer = setTimeout(applyPaste, 250); });
+$('#signPaste').addEventListener('paste', ()=>{ clearTimeout(signTimer); signTimer = setTimeout(applyPaste, 40); });
+$('#reparse').onclick = applyPaste;
+$('#clearSign').onclick = ()=>{ $('#signPaste').value = ''; renderSigns([]); };
+$('#mapWen').onchange = applyPaste;
+$('#dropChupin').onchange = applyPaste;
+$('#body').addEventListener('blur', extractTrailingSigns);
+$('#body').addEventListener('paste', ()=>{ setTimeout(extractTrailingSigns, 60); });
+
+function setMeter(pct){
+  const m = $('#meter'), b = $('#meterBar');
+  if (pct === null){ m.classList.remove('on'); b.style.width = '0%'; return; }
+  m.classList.add('on'); b.style.width = Math.max(2, Math.min(100, pct)) + '%';
+}
+
+function dlLink(blob, name, label, primary){
+  const url = URL.createObjectURL(blob);
+  lastLinks.push(url);
+  const a = document.createElement('a');
+  a.href = url; a.download = name;
+  a.className = primary ? 'primary' : '';
+  a.textContent = label;
+  return a;
+}
+
+$('#go').onclick = async ()=>{
+  if (!files.length) return show('err','先放几张图片进来。');
+  const title = $('#title').value.trim();
+  if (!title) return show('err','标题不能为空。');
+  if (typeof JSZip === 'undefined') return show('err','JSZip 没加载（vendor/jszip.min.js）。');
+
+  const prefix = $('#prefix').value.trim();
+  const rename = $('#rename').checked;
+  const paras = $('#body').value.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+  const signs = [...document.querySelectorAll('#signs .signrow input')].map(i=>i.value.trim()).filter(Boolean);
+  const folder = DocGen.safeName((prefix || '') + title);
+  const docxName = DocGen.safeName(title) + '.docx';
+
+  lastLinks.forEach(URL.revokeObjectURL);
+  lastLinks = [];
+
+  const btn = $('#go');
+  btn.disabled = true; btn.textContent = '生成中…';
+  setMeter(8);
+  const t0 = performance.now();
+
+  try{
+    const photos = [];
+    for (let i = 0; i < files.length; i++){
+      const p = await DocGen.prepareImage(files[i].file);
+      let name;
+      if (rename){
+        name = prefix
+          ? 'IMG-' + prefix + '-' + String(i+1).padStart(2,'0') + '.jpg'
+          : 'IMG-' + String(i+1).padStart(2,'0') + '.jpg';
+      } else {
+        const base = (files[i].name || ('IMG-' + (i+1))).replace(/\.[^.]+$/, '');
+        name = DocGen.safeName(base) + '.jpg';
+      }
+      photos.push({name, bytes: p.bytes, w: p.w, h: p.h});
+      setMeter(10 + (i+1)/files.length*45);
+    }
+
+    const last = photos[photos.length - 1];
+    const docxBlob = await DocGen.buildDocxBlob({
+      title, paras, signs,
+      imgBytes: last.bytes, imgW: last.w, imgH: last.h
+    });
+    setMeter(70);
+
+    const zipBlob = await DocGen.buildPackageZip(docxBlob, photos, folder, docxName);
+    setMeter(100);
+
+    const ms = Math.round(performance.now() - t0);
+    const kb = (n)=> (n/1024).toFixed(0) + ' KB';
+    const box = document.createElement('div');
+    box.innerHTML = '已生成：<b>' + folder + '</b><br>' +
+      '正文 ' + paras.length + ' 段 · 署名 ' + signs.length + ' 行 · 照片 ' + photos.length +
+      ' 张（末图：' + last.name + '）· 用时 ' + ms + ' ms<br>' +
+      'DOCX ' + kb(docxBlob.size) + ' ／ ZIP ' + kb(zipBlob.size) + '<br>';
+    const links = document.createElement('div');
+    links.className = 'dl';
+    links.append(dlLink(zipBlob, folder + '.zip', '⬇ 下载 ZIP 包（docx + 照片）', true));
+    links.append(dlLink(docxBlob, docxName, '⬇ 只下载 DOCX'));
+    box.append(links);
+    const r = $('#result');
+    r.className = 'result ok';
+    r.innerHTML = '';
+    r.append(box);
+  }catch(e){
+    show('err', '出错了：' + (e && e.message ? e.message : e));
+  }finally{
+    btn.disabled = false; btn.textContent = '生成文档';
+    setTimeout(()=> setMeter(null), 600);
+  }
+};
+
+boot();
+</script>
+</body>
+</html>
